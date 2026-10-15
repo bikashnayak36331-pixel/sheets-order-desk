@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node --test \"test/*.test.js\"",
+    "test": "node scripts/build.mjs && node --test test/core.test.js test/flow.test.js test/bundle.test.js",
     "push": "npx @google/clasp push"
   }
 }
