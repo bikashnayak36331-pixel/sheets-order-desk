@@ -1,0 +1,5 @@
+{
+  "scriptId": "PASTE-YOUR-SCRIPT-ID-HERE",
+  "rootDir": "src",
+  "filePushOrder": ["src/Config.js", "src/Core.js", "src/Sheets.js", "src/Setup.js", "src/Orders.js", "src/Documents.js", "src/Reports.js"]
+}

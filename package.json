@@ -1,0 +1,17 @@
+{
+  "name": "sheets-order-desk",
+  "version": "1.0.0",
+  "description": "Order tracking, stock, PDF invoices, customer emails and a daily summary for Google Sheets, built with Apps Script.",
+  "private": true,
+  "license": "MIT",
+  "author": "Bikash Nayak",
+  "repository": "github:bikashnayak36331-pixel/sheets-order-desk",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test \"test/*.test.js\"",
+    "push": "npx @google/clasp push"
+  }
+}
