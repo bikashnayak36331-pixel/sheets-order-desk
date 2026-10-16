@@ -132,12 +132,17 @@ function lowStockList(products) {
     .map(function (p) { return { sku: p.sku, name: p.name, stock: p.stock, reorderAt: p.reorderAt }; });
 }
 
-/** Counts and revenue for orders created in [start, end). Cancelled orders are not revenue. */
+/**
+ * Counts and money for orders created in [start, end).
+ * revenueCents counts only money received (Paid, Shipped, Delivered); awaitingCents is the value of orders that
+ * are still New, On hold or Confirmed. Cancelled orders count in neither.
+ */
 function summarizeOrders(orders, start, end) {
   const byStatus = {};
   STATUSES.forEach(function (s) { byStatus[s] = 0; });
   let count = 0;
   let revenue = 0;
+  let awaiting = 0;
   let open = 0;
   orders.forEach(function (o) {
     const created = o.created instanceof Date ? o.created : new Date(o.created);
@@ -145,10 +150,11 @@ function summarizeOrders(orders, start, end) {
     if (created >= start && created < end) {
       count += 1;
       byStatus[o.status] = (byStatus[o.status] || 0) + 1;
-      if (o.status !== 'Cancelled') revenue += toCents(o.total);
+      if (PAID_STATUSES.indexOf(o.status) !== -1) revenue += toCents(o.total);
+      else if (o.status !== 'Cancelled') awaiting += toCents(o.total);
     }
   });
-  return { count: count, revenueCents: revenue, byStatus: byStatus, openOrders: open };
+  return { count: count, revenueCents: revenue, awaitingCents: awaiting, byStatus: byStatus, openOrders: open };
 }
 
 function escapeHtml(text) {
@@ -172,10 +178,10 @@ function buildInvoiceHtml(order, priced, settings) {
     'body{font-family:Arial,Helvetica,sans-serif;color:#1f2933;margin:40px;font-size:13px}' +
     'table.top{width:100%;border-collapse:collapse}table.top td{vertical-align:top;padding:0}' +
     'h1{color:#0b6e4f;margin:0;font-size:28px;letter-spacing:1px}.biz{font-size:18px;font-weight:bold}' +
-    '.muted{color:#616e7c}.badge{display:inline-block;margin-top:6px;padding:3px 10px;border-radius:12px;' +
-    'background:#0b6e4f;color:#fff;font-weight:bold;font-size:11px}' +
+    '.muted{color:#616e7c}.badge{display:inline-block;margin-top:6px;padding:2px 10px;border:2px solid #0b6e4f;' +
+    'color:#0b6e4f;font-weight:bold;font-size:12px;letter-spacing:1px}' +
     'table.items{width:100%;border-collapse:collapse;margin-top:28px}' +
-    'table.items th{background:#1f2933;color:#fff;text-align:left;padding:8px;font-size:11px}' +
+    'table.items th{color:#1f2933;text-align:left;padding:8px;font-size:11px;border-bottom:2px solid #1f2933}' +
     'table.items td{padding:8px;border-bottom:1px solid #d9e2ec}.r,table.items th.r{text-align:right}' +
     '.sku{color:#616e7c;font-size:10px}table.totals{margin-left:auto;margin-top:12px}' +
     'table.totals td{padding:4px 8px}.grand td{font-weight:bold;font-size:15px;border-top:2px solid #1f2933}' +
@@ -211,8 +217,12 @@ function buildStatusEmail(order, status, settings) {
     'Shipped': 'Good news: your order is on its way.',
     'Cancelled': 'Your order has been cancelled. If this is unexpected, please reply to this email.',
   };
+  const subjects = {
+    'New': 'received', 'On hold': 'received (on hold)', 'Confirmed': 'confirmed', 'Paid': 'payment received',
+    'Shipped': 'shipped', 'Cancelled': 'cancelled',
+  };
   const first = String(order.customer || 'there').split(' ')[0];
-  const subject = settings.businessName + ': order ' + order.id + ' ' + status.toLowerCase();
+  const subject = settings.businessName + ': order ' + order.id + ' ' + (subjects[status] || status.toLowerCase());
   const body = 'Hi ' + first + ',\n\n' + (messages[status] || 'Your order status is now: ' + status + '.') +
     '\n\nOrder: ' + order.id + '\nItems: ' + order.items + '\nTotal: ' + order.totalText +
     '\n\nThank you,\n' + settings.businessName;
@@ -227,7 +237,8 @@ function buildSummaryEmail(summary, lowStock, settings, dayLabel) {
   const lines = [
     'Order Desk summary for ' + dayLabel, '',
     'New orders: ' + summary.count,
-    'Revenue (excluding cancelled): ' + formatMoney(summary.revenueCents, cur),
+    'Paid: ' + formatMoney(summary.revenueCents, cur) + ' (orders now Paid, Shipped or Delivered)',
+    'Awaiting payment: ' + formatMoney(summary.awaitingCents || 0, cur) + ' (New, On hold or Confirmed)',
     'Open orders right now: ' + summary.openOrders, '',
     'By status: ' + (statusText || 'none'),
   ];

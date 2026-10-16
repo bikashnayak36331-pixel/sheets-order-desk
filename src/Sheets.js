@@ -21,7 +21,8 @@ function col_(name) {
 }
 
 function tz_() {
-  return ss_().getSpreadsheetTimeZone() || Session.getScriptTimeZone();
+  const tz = ss_().getSpreadsheetTimeZone();
+  return typeof tz === 'string' && tz ? tz : Session.getScriptTimeZone();
 }
 
 function formatDate_(date, pattern) {
@@ -113,7 +114,39 @@ function setOrderCells_(row, changes) {
   Object.keys(changes).forEach(function (name) {
     sh.getRange(row, col_(name)).setValue(changes[name]);
   });
-  sh.getRange(row, col_('Last update')).setValue(new Date());
+  setDateCell_(sh, row, col_('Last update'), new Date());
+}
+
+/**
+ * Write a date and (re)apply the date format. Google Sheets replaces a column's number format with the
+ * spreadsheet's default date format when a script writes a Date, so the format set up front is not enough.
+ */
+function setDateCell_(sh, row, column, date) {
+  sh.getRange(row, column).setValue(date).setNumberFormat(DATE_FORMAT);
+}
+
+/** Midnight today and on the 1st of this month, in the spreadsheet's time zone. */
+function dayAndMonthStart_(now) {
+  const tz = tz_();
+  return {
+    day: Utilities.parseDate(Utilities.formatDate(now, tz, 'yyyy-MM-dd'), tz, 'yyyy-MM-dd'),
+    month: Utilities.parseDate(Utilities.formatDate(now, tz, 'yyyy-MM') + '-01', tz, 'yyyy-MM-dd'),
+  };
+}
+
+/** Column number of the "Order Desk ID" column on a form response sheet, adding the column if needed. */
+function formIdColumn_(sh) {
+  const width = Math.max(1, sh.getLastColumn());
+  const header = sh.getRange(1, 1, 1, width).getValues()[0];
+  const i = header.indexOf(FORM_ID_HEADER);
+  if (i !== -1) return i + 1;
+  sh.getRange(1, width + 1).setValue(FORM_ID_HEADER).setFontWeight('bold');
+  return width + 1;
+}
+
+/** Sheets in this spreadsheet that receive Google Form responses. */
+function formResponseSheets_() {
+  return ss_().getSheets().filter(function (sh) { return !!sh.getFormUrl(); });
 }
 
 /** Append a line to the Log sheet (newest at the bottom, trimmed to the last 2,000 entries). */

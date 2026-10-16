@@ -20,8 +20,8 @@
 - **Status flow with guard-rails:** New → Confirmed → Paid → Shipped → Delivered (or Cancelled). Skipping a step, such as New → Delivered, is undone with a message explaining what's allowed.
 - **PDF invoices in Google Drive**, created when an order is paid (or from the menu) and linked in the sheet.
 - **Customer emails** on each status change (new order, confirmed, paid with the invoice attached, shipped, cancelled). **They are off until you switch them on**; until then, each email is previewed in the Log sheet.
-- **Dashboard and daily summary:** today's and this month's orders and revenue, open orders, low-stock items, a status chart, and a morning email to you.
-- **Nothing gets lost.** An unknown product or a missing email address still saves the order (On hold, with the reason), and two form submissions at once can't get the same ID.
+- **Dashboard and daily summary:** today's and this month's orders, money received (orders that are Paid, Shipped or Delivered), open orders, low-stock items, a status chart, and a morning email to you that also shows what is still awaiting payment.
+- **Nothing gets lost.** An unknown product or a missing email address still saves the order (On hold, with the reason), and two form submissions at once can't get the same ID. Each form response gets its order ID in an **Order Desk ID** column, and an hourly check turns any response without one into an order, because Google occasionally skips a form trigger (it happened once in the live test below). A trigger that fires twice can't create a second order.
 
 <p align="center"><img src="docs/images/invoice.png" width="520" alt="Invoice ORD-0001 for Crumbs Bakery: two items, 8% tax, total $82.08, marked PAID"></p>
 <p align="center"><sub>The invoice HTML that Order Desk turns into a PDF, rendered in Chrome. Google's PDF converter may differ slightly.</sub></p>
@@ -69,7 +69,7 @@ stateDiagram-v2
 3. Reload the spreadsheet. An **Order Desk** menu appears. Click **Order Desk → Set up / repair sheets**.
    - Google asks you to authorise the script. Because it's your own script and not a published app, Google shows "Google hasn't verified this app": choose **Advanced → Go to (project name)**.
 4. Fill in the **Settings** sheet (business name, your email, currency symbol, tax rate) and your **Products**.
-5. Click **Order Desk → Install automations**. This turns on form orders, status-change actions, the hourly dashboard refresh and the daily summary.
+5. Click **Order Desk → Install automations**. This turns on form orders, status-change actions, the hourly check (missed form orders and dashboard) and the daily summary. Form responses that already exist are marked *Not imported*, so old responses never become orders by surprise.
 6. *(Optional)* Link a Google Form with **Tools → Create a new form**. Use questions named **Name**, **Email**, **Phone**, **Product** (a dropdown of product names or SKUs) and **Quantity**, or **Items** for a free list, plus **Notes**.
 
 Try it straight away with **Order Desk → Add a test order**.
@@ -110,7 +110,7 @@ Gmail limits how many emails a script can send per day (see [Apps Script quotas]
 ## Tests
 
 ```bash
-npm test   # builds dist/OrderDesk.gs, then runs 22 tests with Node's built-in test runner
+npm test   # builds dist/OrderDesk.gs, then runs 25 tests with Node's built-in test runner
 ```
 
 The tests run the **real `src/` files** against an in-memory imitation of Google Sheets, Drive, Gmail, locks and triggers ([`test/fakes.js`](test/fakes.js)), in one shared scope the way Apps Script loads them. The fake throws on any method it doesn't know, so a typo fails here, not in Google. They cover:
@@ -124,7 +124,7 @@ The tests run the **real `src/` files** against an in-memory imitation of Google
 - triggers, the dashboard and the daily summary;
 - the single-file bundle.
 
-These tests don't replace a final check in your own Google account.
+**Live test (16 Oct 2026, v1.0.0 → v1.1.0).** The bundle was also run in a real Google account: setup, the menu, a linked Google Form, stock, every status rule, PDF invoices in Drive, real customer emails with the invoice attached, the dashboard and the daily summary. It found five problems, all fixed in 1.1.0 and covered by new tests: a form response whose trigger Google never fired, invoice colours lost in Google's PDF converter, date formats being reset, awkward email subjects, and unpaid orders counted as revenue. See the [changelog](CHANGELOG.md).
 
 ## Project layout
 

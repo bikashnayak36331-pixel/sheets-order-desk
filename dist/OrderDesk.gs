@@ -1,5 +1,5 @@
 /**
- * Order Desk v1.0.0: order tracking, stock, PDF invoices and emails for Google Sheets.
+ * Order Desk v1.1.0: order tracking, stock, PDF invoices and emails for Google Sheets.
  * https://github.com/bikashnayak36331-pixel/sheets-order-desk  (MIT License)
  *
  * Install: in your spreadsheet open Extensions > Apps Script, replace the contents of Code.gs
@@ -64,6 +64,16 @@ const DEFAULT_SETTINGS = [
   ['Daily summary hour (0-23)', 7],
   ['Payment instructions', 'Pay by bank transfer or card. Reply to this email with any questions.'],
 ];
+
+/** Number format for the Created and Last update columns. Re-applied on every write (see setDateCell_). */
+const DATE_FORMAT = 'yyyy-mm-dd hh:mm';
+
+/** Column Order Desk adds to a linked form's response sheet, to remember which responses became orders. */
+const FORM_ID_HEADER = 'Order Desk ID';
+const FORM_NOT_IMPORTED = 'Not imported (sent before Order Desk was set up)';
+
+/** Statuses whose order total counts as money received. */
+const PAID_STATUSES = ['Paid', 'Shipped', 'Delivered'];
 
 const SAMPLE_PRODUCTS = [
   ['CAKE-CHOC', 'Chocolate fudge cake (8 in)', 32, 12, 3, 'Yes'],
@@ -208,12 +218,17 @@ function lowStockList(products) {
     .map(function (p) { return { sku: p.sku, name: p.name, stock: p.stock, reorderAt: p.reorderAt }; });
 }
 
-/** Counts and revenue for orders created in [start, end). Cancelled orders are not revenue. */
+/**
+ * Counts and money for orders created in [start, end).
+ * revenueCents counts only money received (Paid, Shipped, Delivered); awaitingCents is the value of orders that
+ * are still New, On hold or Confirmed. Cancelled orders count in neither.
+ */
 function summarizeOrders(orders, start, end) {
   const byStatus = {};
   STATUSES.forEach(function (s) { byStatus[s] = 0; });
   let count = 0;
   let revenue = 0;
+  let awaiting = 0;
   let open = 0;
   orders.forEach(function (o) {
     const created = o.created instanceof Date ? o.created : new Date(o.created);
@@ -221,10 +236,11 @@ function summarizeOrders(orders, start, end) {
     if (created >= start && created < end) {
       count += 1;
       byStatus[o.status] = (byStatus[o.status] || 0) + 1;
-      if (o.status !== 'Cancelled') revenue += toCents(o.total);
+      if (PAID_STATUSES.indexOf(o.status) !== -1) revenue += toCents(o.total);
+      else if (o.status !== 'Cancelled') awaiting += toCents(o.total);
     }
   });
-  return { count: count, revenueCents: revenue, byStatus: byStatus, openOrders: open };
+  return { count: count, revenueCents: revenue, awaitingCents: awaiting, byStatus: byStatus, openOrders: open };
 }
 
 function escapeHtml(text) {
@@ -248,10 +264,10 @@ function buildInvoiceHtml(order, priced, settings) {
     'body{font-family:Arial,Helvetica,sans-serif;color:#1f2933;margin:40px;font-size:13px}' +
     'table.top{width:100%;border-collapse:collapse}table.top td{vertical-align:top;padding:0}' +
     'h1{color:#0b6e4f;margin:0;font-size:28px;letter-spacing:1px}.biz{font-size:18px;font-weight:bold}' +
-    '.muted{color:#616e7c}.badge{display:inline-block;margin-top:6px;padding:3px 10px;border-radius:12px;' +
-    'background:#0b6e4f;color:#fff;font-weight:bold;font-size:11px}' +
+    '.muted{color:#616e7c}.badge{display:inline-block;margin-top:6px;padding:2px 10px;border:2px solid #0b6e4f;' +
+    'color:#0b6e4f;font-weight:bold;font-size:12px;letter-spacing:1px}' +
     'table.items{width:100%;border-collapse:collapse;margin-top:28px}' +
-    'table.items th{background:#1f2933;color:#fff;text-align:left;padding:8px;font-size:11px}' +
+    'table.items th{color:#1f2933;text-align:left;padding:8px;font-size:11px;border-bottom:2px solid #1f2933}' +
     'table.items td{padding:8px;border-bottom:1px solid #d9e2ec}.r,table.items th.r{text-align:right}' +
     '.sku{color:#616e7c;font-size:10px}table.totals{margin-left:auto;margin-top:12px}' +
     'table.totals td{padding:4px 8px}.grand td{font-weight:bold;font-size:15px;border-top:2px solid #1f2933}' +
@@ -287,8 +303,12 @@ function buildStatusEmail(order, status, settings) {
     'Shipped': 'Good news: your order is on its way.',
     'Cancelled': 'Your order has been cancelled. If this is unexpected, please reply to this email.',
   };
+  const subjects = {
+    'New': 'received', 'On hold': 'received (on hold)', 'Confirmed': 'confirmed', 'Paid': 'payment received',
+    'Shipped': 'shipped', 'Cancelled': 'cancelled',
+  };
   const first = String(order.customer || 'there').split(' ')[0];
-  const subject = settings.businessName + ': order ' + order.id + ' ' + status.toLowerCase();
+  const subject = settings.businessName + ': order ' + order.id + ' ' + (subjects[status] || status.toLowerCase());
   const body = 'Hi ' + first + ',\n\n' + (messages[status] || 'Your order status is now: ' + status + '.') +
     '\n\nOrder: ' + order.id + '\nItems: ' + order.items + '\nTotal: ' + order.totalText +
     '\n\nThank you,\n' + settings.businessName;
@@ -303,7 +323,8 @@ function buildSummaryEmail(summary, lowStock, settings, dayLabel) {
   const lines = [
     'Order Desk summary for ' + dayLabel, '',
     'New orders: ' + summary.count,
-    'Revenue (excluding cancelled): ' + formatMoney(summary.revenueCents, cur),
+    'Paid: ' + formatMoney(summary.revenueCents, cur) + ' (orders now Paid, Shipped or Delivered)',
+    'Awaiting payment: ' + formatMoney(summary.awaitingCents || 0, cur) + ' (New, On hold or Confirmed)',
     'Open orders right now: ' + summary.openOrders, '',
     'By status: ' + (statusText || 'none'),
   ];
@@ -338,7 +359,8 @@ function col_(name) {
 }
 
 function tz_() {
-  return ss_().getSpreadsheetTimeZone() || Session.getScriptTimeZone();
+  const tz = ss_().getSpreadsheetTimeZone();
+  return typeof tz === 'string' && tz ? tz : Session.getScriptTimeZone();
 }
 
 function formatDate_(date, pattern) {
@@ -430,7 +452,39 @@ function setOrderCells_(row, changes) {
   Object.keys(changes).forEach(function (name) {
     sh.getRange(row, col_(name)).setValue(changes[name]);
   });
-  sh.getRange(row, col_('Last update')).setValue(new Date());
+  setDateCell_(sh, row, col_('Last update'), new Date());
+}
+
+/**
+ * Write a date and (re)apply the date format. Google Sheets replaces a column's number format with the
+ * spreadsheet's default date format when a script writes a Date, so the format set up front is not enough.
+ */
+function setDateCell_(sh, row, column, date) {
+  sh.getRange(row, column).setValue(date).setNumberFormat(DATE_FORMAT);
+}
+
+/** Midnight today and on the 1st of this month, in the spreadsheet's time zone. */
+function dayAndMonthStart_(now) {
+  const tz = tz_();
+  return {
+    day: Utilities.parseDate(Utilities.formatDate(now, tz, 'yyyy-MM-dd'), tz, 'yyyy-MM-dd'),
+    month: Utilities.parseDate(Utilities.formatDate(now, tz, 'yyyy-MM') + '-01', tz, 'yyyy-MM-dd'),
+  };
+}
+
+/** Column number of the "Order Desk ID" column on a form response sheet, adding the column if needed. */
+function formIdColumn_(sh) {
+  const width = Math.max(1, sh.getLastColumn());
+  const header = sh.getRange(1, 1, 1, width).getValues()[0];
+  const i = header.indexOf(FORM_ID_HEADER);
+  if (i !== -1) return i + 1;
+  sh.getRange(1, width + 1).setValue(FORM_ID_HEADER).setFontWeight('bold');
+  return width + 1;
+}
+
+/** Sheets in this spreadsheet that receive Google Form responses. */
+function formResponseSheets_() {
+  return ss_().getSheets().filter(function (sh) { return !!sh.getFormUrl(); });
 }
 
 /** Append a line to the Log sheet (newest at the bottom, trimmed to the last 2,000 entries). */
@@ -456,6 +510,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Add a test order', 'addTestOrder')
     .addItem('Create invoice for selected order', 'createInvoiceForSelection')
+    .addItem('Import missed form orders', 'importMissedFormOrdersNow')
     .addItem('Refresh dashboard', 'refreshDashboard')
     .addItem('Send daily summary now', 'sendDailySummary')
     .addToUi();
@@ -487,8 +542,8 @@ function setupOrderDesk() {
     'Invoice': 90, 'Notes': 220, 'Last update': 130 };
   ORDER_COLUMNS.forEach(function (name, i) { orders.setColumnWidth(i + 1, widths[name] || 85); });
   const rows = orders.getMaxRows() - 1;
-  orders.getRange(2, col_('Created'), rows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
-  orders.getRange(2, col_('Last update'), rows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
+  orders.getRange(2, col_('Created'), rows, 1).setNumberFormat(DATE_FORMAT);
+  orders.getRange(2, col_('Last update'), rows, 1).setNumberFormat(DATE_FORMAT);
   ['Subtotal', 'Discount', 'Tax', 'Total'].forEach(function (name) {
     orders.getRange(2, col_(name), rows, 1).setNumberFormat(moneyFormat);
   });
@@ -545,12 +600,24 @@ function statusColours_(range) {
  * Installable "On form submit" trigger. Works with a Google Form linked to this spreadsheet.
  * Recognised questions (case does not matter): Name, Email, Phone, Product, Quantity, Items, Notes.
  * Use either Product + Quantity (one product) or Items ("CAKE-CHOC x2, CUPC-12").
+ *
+ * The new order's ID is written next to the response (column "Order Desk ID"), so a response is never turned
+ * into two orders, even if Google fires the trigger twice, and importMissedFormOrders() can find responses
+ * whose trigger never fired.
  */
 function onFormSubmit(e) {
+  const input = formAnswersToInput_((e && e.namedValues) || {});
+  input.source = 'Form';
+  if (e && e.range) input.response = { sheet: e.range.getSheet(), row: e.range.getRow() };
+  return createOrder_(input);
+}
+
+/** Turn form answers ({question: [answer]}) into the input for createOrder_. */
+function formAnswersToInput_(named) {
   const answers = {};
-  const named = (e && e.namedValues) || {};
   Object.keys(named).forEach(function (q) {
-    answers[q.trim().toLowerCase()] = String((named[q] || [''])[0]).trim();
+    const v = named[q];
+    answers[String(q).trim().toLowerCase()] = String((Array.isArray(v) ? v[0] : v) || '').trim();
   });
   const pick = function () {
     for (let i = 0; i < arguments.length; i++) if (answers[arguments[i]]) return answers[arguments[i]];
@@ -562,13 +629,60 @@ function onFormSubmit(e) {
     const qty = pick('quantity', 'qty') || '1';
     items = product ? productToSku_(product) + ' x' + qty : '';
   }
-  return createOrder_({
+  return {
     customer: pick('name', 'your name', 'full name', 'customer'),
     email: pick('email', 'email address', 'your email'),
     phone: pick('phone', 'phone number', 'mobile'),
     items: items,
     notes: pick('notes', 'comments', 'message', 'delivery notes'),
-    source: 'Form',
+  };
+}
+
+/**
+ * Turn form responses that have no order yet into orders. Google occasionally does not fire the form submit
+ * trigger (seen in a live test on 16 Oct 2026), so this runs every hour (hourlyCheck) and from the menu.
+ * Responses that were already there when the automations were installed are marked "Not imported" and skipped.
+ */
+function importMissedFormOrders() {
+  let imported = 0;
+  formResponseSheets_().forEach(function (sh) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const idCol = formIdColumn_(sh);
+    const values = sh.getRange(1, 1, lastRow, Math.max(idCol, sh.getLastColumn())).getValues();
+    const header = values[0];
+    for (let r = 1; r < values.length; r++) {
+      if (values[r][0] === '' || values[r][idCol - 1] !== '') continue; // empty row, or already handled
+      const named = {};
+      header.forEach(function (h, i) { if (i > 0 && i !== idCol - 1 && h !== '') named[h] = [values[r][i]]; });
+      const input = formAnswersToInput_(named);
+      input.source = 'Form, caught up';
+      input.response = { sheet: sh, row: r + 1 };
+      if (createOrder_(input)) imported += 1;
+    }
+  });
+  if (imported) log_('Missed form orders imported', '', imported + ' order(s) whose form trigger did not run');
+  return imported;
+}
+
+/** Menu: run the catch-up now and say what happened. */
+function importMissedFormOrdersNow() {
+  const n = importMissedFormOrders();
+  ss_().toast(n ? 'Imported ' + n + ' missed form order(s).' : 'Every form response already has an order.',
+    'Order Desk', 6);
+  return n;
+}
+
+/** Installing the automations: mark responses that already exist so the catch-up never imports them. */
+function markExistingFormResponses_() {
+  formResponseSheets_().forEach(function (sh) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const idCol = formIdColumn_(sh);
+    const values = sh.getRange(2, 1, lastRow - 1, idCol).getValues();
+    values.forEach(function (v, i) {
+      if (v[0] !== '' && v[idCol - 1] === '') sh.getRange(i + 2, idCol).setValue(FORM_NOT_IMPORTED);
+    });
   });
 }
 
@@ -594,6 +708,16 @@ function createOrder_(input) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000); // two form submissions at once must not get the same order ID
   try {
+    // A form response becomes at most one order: skip it if it already has an Order Desk ID.
+    let responseCell = null;
+    if (input.response) {
+      responseCell = input.response.sheet.getRange(input.response.row, formIdColumn_(input.response.sheet));
+      const existing = responseCell.getValue();
+      if (existing !== '') {
+        log_('Form response skipped', String(existing), 'Row ' + input.response.row + ' already has an order');
+        return null;
+      }
+    }
     const settings = getSettings_();
     const products = getProducts_();
     const sh = sheet_(SHEETS.ORDERS);
@@ -652,6 +776,9 @@ function createOrder_(input) {
     });
     sh.appendRow(row);
     const rowNumber = sh.getLastRow();
+    setDateCell_(sh, rowNumber, col_('Created'), now);
+    setDateCell_(sh, rowNumber, col_('Last update'), now);
+    if (responseCell) responseCell.setValue(id);
     log_('Order created (' + (input.source || 'Manual') + ')', id, status + ': ' + itemsText);
     const order = readOrder_(rowNumber, settings);
     notifyCustomer_(order, status, settings, null);
@@ -879,8 +1006,9 @@ function refreshDashboard() {
   const orders = readAllOrders_(settings);
   const products = getProducts_();
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const starts = dayAndMonthStart_(now); // midnight in the spreadsheet's time zone, not the script's
+  const startOfDay = starts.day;
+  const startOfMonth = starts.month;
   const tomorrow = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
   const today = summarizeOrders(orders, startOfDay, tomorrow);
   const month = summarizeOrders(orders, startOfMonth, tomorrow);
@@ -891,9 +1019,9 @@ function refreshDashboard() {
     ['Order Desk dashboard', 'Updated ' + formatDate_(now)],
     ['', ''],
     ['Orders today', today.count],
-    ['Revenue today', formatMoney(today.revenueCents, cur)],
+    ['Paid today', formatMoney(today.revenueCents, cur)],
     ['Orders this month', month.count],
-    ['Revenue this month', formatMoney(month.revenueCents, cur)],
+    ['Paid this month', formatMoney(month.revenueCents, cur)],
     ['Open orders (New, On hold, Confirmed, Paid)', today.openOrders],
     ['Products at or below reorder level', low.length],
     ['', ''],
@@ -911,7 +1039,7 @@ function refreshDashboard() {
   sh.getRange(10, 1, 1, 2).setFontWeight('bold');
   sh.getRange(10 + STATUSES.length + 2, 1, 1, 2).setFontWeight('bold');
   sh.setColumnWidth(1, 320);
-  sh.setColumnWidth(2, 160);
+  sh.setColumnWidth(2, 250); // wide enough for "Updated 2026-10-16 22:37" in 14pt bold
   if (sh.getCharts().length === 0) {
     sh.insertChart(sh.newChart().setChartType(Charts.ChartType.BAR)
       .addRange(sh.getRange(11, 1, STATUSES.length, 2))
@@ -939,23 +1067,31 @@ function sendDailySummary() {
   return email;
 }
 
+/** Hourly trigger: import form responses whose trigger did not fire, then refresh the dashboard. */
+function hourlyCheck() {
+  importMissedFormOrders();
+  refreshDashboard();
+}
+
 /**
  * Menu: install the automations. Safe to run again: old Order Desk triggers are removed first.
  * - On form submit -> onFormSubmit (orders from a linked Google Form)
  * - On edit        -> handleEdit (status changes, item edits)
  * - Daily          -> sendDailySummary at the hour in Settings
- * - Hourly         -> refreshDashboard
+ * - Hourly         -> hourlyCheck (missed form orders, dashboard)
+ * Form responses that already exist are marked "Not imported" so they never become orders by surprise.
  */
 function installTriggers() {
   const ss = ss_();
-  const ours = ['onFormSubmit', 'handleEdit', 'sendDailySummary', 'refreshDashboard'];
+  const ours = ['onFormSubmit', 'handleEdit', 'sendDailySummary', 'refreshDashboard', 'hourlyCheck'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (ours.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('onFormSubmit').forSpreadsheet(ss).onFormSubmit().create();
   ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
   ScriptApp.newTrigger('sendDailySummary').timeBased().everyDays(1).atHour(getSettings_().summaryHour).create();
-  ScriptApp.newTrigger('refreshDashboard').timeBased().everyHours(1).create();
-  log_('Automations installed', '', ours.join(', '));
+  ScriptApp.newTrigger('hourlyCheck').timeBased().everyHours(1).create();
+  markExistingFormResponses_();
+  log_('Automations installed', '', 'onFormSubmit, handleEdit, sendDailySummary, hourlyCheck');
   ss.toast('Automations are on: form orders, status emails, daily summary.', 'Order Desk', 8);
 }

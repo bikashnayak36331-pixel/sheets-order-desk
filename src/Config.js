@@ -55,6 +55,16 @@ const DEFAULT_SETTINGS = [
   ['Payment instructions', 'Pay by bank transfer or card. Reply to this email with any questions.'],
 ];
 
+/** Number format for the Created and Last update columns. Re-applied on every write (see setDateCell_). */
+const DATE_FORMAT = 'yyyy-mm-dd hh:mm';
+
+/** Column Order Desk adds to a linked form's response sheet, to remember which responses became orders. */
+const FORM_ID_HEADER = 'Order Desk ID';
+const FORM_NOT_IMPORTED = 'Not imported (sent before Order Desk was set up)';
+
+/** Statuses whose order total counts as money received. */
+const PAID_STATUSES = ['Paid', 'Shipped', 'Delivered'];
+
 const SAMPLE_PRODUCTS = [
   ['CAKE-CHOC', 'Chocolate fudge cake (8 in)', 32, 12, 3, 'Yes'],
   ['CAKE-LEMON', 'Lemon drizzle cake (8 in)', 28, 10, 3, 'Yes'],

@@ -70,6 +70,7 @@ class FakeSheet {
   }
   getName() { return this.name; }
   getParent() { return this.spreadsheet; }
+  getFormUrl() { return this.formUrl || null; }
   cell(r, c) { return (this.data[r - 1] && this.data[r - 1][c - 1] !== undefined) ? this.data[r - 1][c - 1] : ''; }
   setCell(r, c, v) {
     while (this.data.length < r) this.data.push([]);
@@ -220,6 +221,11 @@ function createEnvironment({ now } = {}) {
         return pattern
           .replace('yyyy', d.getUTCFullYear()).replace('MM', pad(d.getUTCMonth() + 1)).replace('dd', pad(d.getUTCDate()))
           .replace('HH', pad(d.getUTCHours())).replace('mm', pad(d.getUTCMinutes()));
+      },
+      parseDate(text, tz, pattern) {
+        if (tz !== 'UTC' || pattern !== 'yyyy-MM-dd') throw new Error('fake parseDate only supports UTC yyyy-MM-dd');
+        const [y, m, d] = text.split('-').map(Number);
+        return new RealDate(RealDate.UTC(y, m - 1, d));
       },
     },
     Session: { getScriptTimeZone: () => 'UTC', getEffectiveUser: () => ({ getEmail: () => 'owner@shop.example' }) },

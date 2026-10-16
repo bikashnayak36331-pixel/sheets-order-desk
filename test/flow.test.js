@@ -59,7 +59,7 @@ test('a Google Form order gets an ID, prices, tax and reserves stock', () => {
   assert.equal(env.mail.length, 0, 'emails are off by default');
   assert.ok(logs(env).some((l) => l.startsWith('Email preview (sending is off) | ORD-0001 | To dana@fox.example')));
   const dash = sheet(env, 'Dashboard').getRange('A3:B8').getValues();
-  assert.deepEqual(dash.map((r) => r[1]).slice(0, 2).map(String), ['1', '$69.12']);
+  assert.deepEqual(dash.map((r) => r[1]).slice(0, 2).map(String), ['1', '$0.00']); // nothing paid yet
 });
 
 test('multi-item form answers and "Name (SKU)" dropdowns are understood', () => {
@@ -97,7 +97,7 @@ test('status changes: invoice PDF and emails when paid, illegal jumps are undone
   setSetting(env, 'Owner email', 'owner@crumbs.example');
   form(env, { 'Name': 'Dana Fox', 'Email': 'dana@fox.example', 'Items': 'CAKE-CHOC x1, COOKIE-24 x2' });
   assert.equal(env.mail.length, 1);
-  assert.equal(env.mail[0].subject, 'Crumbs Bakery: order ORD-0001 new');
+  assert.equal(env.mail[0].subject, 'Crumbs Bakery: order ORD-0001 received');
 
   env.edit('Orders', statusCell(env, 2), 'Delivered'); // New -> Delivered skips steps
   assert.equal(orders(env)[0].Status, 'New');
@@ -114,7 +114,7 @@ test('status changes: invoice PDF and emails when paid, illegal jumps are undone
   assert.match(pdf.blob.getDataAsString(), /Crumbs Bakery[\s\S]*ORD-0001[\s\S]*PAID[\s\S]*\$82\.08/);
   assert.equal(sheet(env, 'Orders').getRange('N2').getFormula(), `=HYPERLINK("${pdf.getUrl()}","Invoice PDF")`);
   const paidMail = env.mail.at(-1);
-  assert.equal(paidMail.subject, 'Crumbs Bakery: order ORD-0001 paid');
+  assert.equal(paidMail.subject, 'Crumbs Bakery: order ORD-0001 payment received');
   assert.equal(paidMail.replyTo, 'owner@crumbs.example');
   assert.equal(paidMail.attachments.length, 1);
 
@@ -196,7 +196,7 @@ test('installing automations twice leaves exactly four triggers', () => {
   env.context.installTriggers();
   env.context.installTriggers();
   const t = env.triggers.map((x) => `${x.fn}:${x.event}:${x.atHour || x.everyHours || ''}`).sort();
-  assert.deepEqual(t, ['handleEdit:edit:', 'onFormSubmit:formSubmit:', 'refreshDashboard:time:1', 'sendDailySummary:time:18']);
+  assert.deepEqual(t, ['handleEdit:edit:', 'hourlyCheck:time:1', 'onFormSubmit:formSubmit:', 'sendDailySummary:time:18']);
 });
 
 test('daily summary goes to the owner and lists low stock', () => {
@@ -212,7 +212,8 @@ test('daily summary goes to the owner and lists low stock', () => {
   const sent = env.mail.at(-1);
   assert.equal(sent.to, 'owner@crumbs.example');
   assert.equal(sent.subject, 'My Shop daily summary: 2 new orders');
-  assert.match(email.body, /Revenue \(excluding cancelled\): \$345\.60/);
+  assert.match(email.body, /Paid: \$0\.00 /);
+  assert.match(email.body, /Awaiting payment: \$345\.60 /); // the cancelled order is in neither
   assert.match(email.body, /By status: New 1, Cancelled 1/);
   assert.match(email.body, /Chocolate fudge cake \(8 in\) \(CAKE-CHOC\): 2 left/);
 });
@@ -225,7 +226,7 @@ test('dashboard shows today, the month, status counts and one chart', () => {
   const d = sheet(env, 'Dashboard');
   const v = Object.fromEntries(d.getRange('A3:B17').getValues().map(([k, val]) => [k, String(val)]));
   assert.equal(v['Orders today'], '2');
-  assert.equal(v['Revenue today'], '$97.20');
+  assert.equal(v['Paid today'], '$32.40', 'only the paid order counts as money received');
   assert.equal(v['New'], '1');
   assert.equal(v['Paid'], '1');
   assert.equal(d.getCharts().length, 1);
@@ -243,4 +244,59 @@ test('menu actions: test order and invoice for the selected row', () => {
   assert.equal(file.getName(), 'Invoice ORD-0001.pdf');
   env.ss.activeRange = sheet(env, 'Products').getRange('A2');
   assert.throws(() => env.context.createInvoiceForSelection(), /Select a cell/);
+});
+
+/** A linked form's response sheet, like Google creates it: Timestamp first, then one column per question. */
+function responseSheet(env, rows) {
+  const sh = env.ss.insertSheet('Form responses 1');
+  sh.formUrl = 'https://docs.google.com/forms/d/test/edit';
+  sh.getRange(1, 1, 1, 4).setValues([['Timestamp', 'Name', 'Email', 'Items']]);
+  rows.forEach((r) => sh.appendRow([new Date('2026-10-15T10:00:00Z'), ...r]));
+  return sh;
+}
+const submit = (env, sh, row) => env.context.onFormSubmit({
+  range: sh.getRange(row, 1, 1, 4),
+  namedValues: Object.fromEntries(sh.getRange(1, 1, 1, 4).getValues()[0].map((h, i) => [h, [sh.getRange(row, i + 1).getValue()]])),
+});
+
+test('a form response becomes exactly one order, even if Google fires the trigger twice', () => {
+  const env = ready();
+  const sh = responseSheet(env, [['Dana Fox', 'dana@fox.example', 'CAKE-CHOC x2']]);
+  submit(env, sh, 2);
+  submit(env, sh, 2); // duplicate trigger
+  assert.equal(orders(env).length, 1);
+  assert.equal(sh.getRange('E1').getValue(), 'Order Desk ID');
+  assert.equal(sh.getRange('E2').getValue(), 'ORD-0001');
+  assert.equal(stockOf(env, 'CAKE-CHOC'), 10, 'stock reserved once');
+  assert.ok(logs(env).some((l) => l.startsWith('Form response skipped | ORD-0001')));
+});
+
+test('responses whose trigger never fired are imported once by the hourly check', () => {
+  const env = ready();
+  const sh = responseSheet(env, [['Old Order', 'old@x.example', 'BREAD-SOUR']]);
+  env.context.installTriggers(); // the existing response is marked, not imported
+  assert.match(String(sh.getRange('E2').getValue()), /^Not imported/);
+  sh.appendRow([new Date('2026-10-15T10:05:00Z'), 'Dana Fox', 'dana@fox.example', 'CUPC-12 x2']);
+  submit(env, sh, 3); // this one's trigger fired
+  sh.appendRow([new Date('2026-10-15T10:06:00Z'), 'Lost Trigger', 'lost@x.example', 'PIZZA x1']); // this one's did not
+  env.context.hourlyCheck();
+  env.context.hourlyCheck(); // running again changes nothing
+  const all = orders(env);
+  assert.deepEqual(all.map((o) => o.Customer), ['Dana Fox', 'Lost Trigger']);
+  assert.equal(all[1].Status, 'On hold', 'an unknown product is still saved, on hold');
+  assert.match(all[1].Notes, /PIZZA/);
+  assert.deepEqual(sh.getRange('E2:E4').getValues().map((r) => String(r[0]).slice(0, 12)),
+    ['Not imported', 'ORD-0001', 'ORD-0002']);
+  assert.ok(logs(env).some((l) => l.startsWith('Missed form orders imported |  | 1 order(s)')));
+  assert.equal(env.context.importMissedFormOrdersNow(), 0);
+  assert.match(env.ss.toasts.at(-1).msg, /already has an order/);
+});
+
+test('dates keep their format after every write', () => {
+  const env = ready();
+  form(env, { 'Name': 'A', 'Email': 'a@x.example', 'Items': 'BREAD-SOUR' });
+  env.edit('Orders', statusCell(env, 2), 'Confirmed');
+  const fmts = sheet(env, 'Orders').formats.filter((f) => f[0] === 'setNumberFormat' && f[1] === 2);
+  assert.ok(fmts.some((f) => f[2] === 2 && f[3] === 'yyyy-mm-dd hh:mm'), 'Created');
+  assert.ok(fmts.filter((f) => f[2] === 16 && f[3] === 'yyyy-mm-dd hh:mm').length >= 2, 'Last update, on create and on change');
 });

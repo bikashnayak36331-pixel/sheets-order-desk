@@ -8,8 +8,9 @@ function refreshDashboard() {
   const orders = readAllOrders_(settings);
   const products = getProducts_();
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const starts = dayAndMonthStart_(now); // midnight in the spreadsheet's time zone, not the script's
+  const startOfDay = starts.day;
+  const startOfMonth = starts.month;
   const tomorrow = new Date(startOfDay.getTime() + 24 * 3600 * 1000);
   const today = summarizeOrders(orders, startOfDay, tomorrow);
   const month = summarizeOrders(orders, startOfMonth, tomorrow);
@@ -20,9 +21,9 @@ function refreshDashboard() {
     ['Order Desk dashboard', 'Updated ' + formatDate_(now)],
     ['', ''],
     ['Orders today', today.count],
-    ['Revenue today', formatMoney(today.revenueCents, cur)],
+    ['Paid today', formatMoney(today.revenueCents, cur)],
     ['Orders this month', month.count],
-    ['Revenue this month', formatMoney(month.revenueCents, cur)],
+    ['Paid this month', formatMoney(month.revenueCents, cur)],
     ['Open orders (New, On hold, Confirmed, Paid)', today.openOrders],
     ['Products at or below reorder level', low.length],
     ['', ''],
@@ -40,7 +41,7 @@ function refreshDashboard() {
   sh.getRange(10, 1, 1, 2).setFontWeight('bold');
   sh.getRange(10 + STATUSES.length + 2, 1, 1, 2).setFontWeight('bold');
   sh.setColumnWidth(1, 320);
-  sh.setColumnWidth(2, 160);
+  sh.setColumnWidth(2, 250); // wide enough for "Updated 2026-10-16 22:37" in 14pt bold
   if (sh.getCharts().length === 0) {
     sh.insertChart(sh.newChart().setChartType(Charts.ChartType.BAR)
       .addRange(sh.getRange(11, 1, STATUSES.length, 2))
@@ -68,23 +69,31 @@ function sendDailySummary() {
   return email;
 }
 
+/** Hourly trigger: import form responses whose trigger did not fire, then refresh the dashboard. */
+function hourlyCheck() {
+  importMissedFormOrders();
+  refreshDashboard();
+}
+
 /**
  * Menu: install the automations. Safe to run again: old Order Desk triggers are removed first.
  * - On form submit -> onFormSubmit (orders from a linked Google Form)
  * - On edit        -> handleEdit (status changes, item edits)
  * - Daily          -> sendDailySummary at the hour in Settings
- * - Hourly         -> refreshDashboard
+ * - Hourly         -> hourlyCheck (missed form orders, dashboard)
+ * Form responses that already exist are marked "Not imported" so they never become orders by surprise.
  */
 function installTriggers() {
   const ss = ss_();
-  const ours = ['onFormSubmit', 'handleEdit', 'sendDailySummary', 'refreshDashboard'];
+  const ours = ['onFormSubmit', 'handleEdit', 'sendDailySummary', 'refreshDashboard', 'hourlyCheck'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (ours.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('onFormSubmit').forSpreadsheet(ss).onFormSubmit().create();
   ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
   ScriptApp.newTrigger('sendDailySummary').timeBased().everyDays(1).atHour(getSettings_().summaryHour).create();
-  ScriptApp.newTrigger('refreshDashboard').timeBased().everyHours(1).create();
-  log_('Automations installed', '', ours.join(', '));
+  ScriptApp.newTrigger('hourlyCheck').timeBased().everyHours(1).create();
+  markExistingFormResponses_();
+  log_('Automations installed', '', 'onFormSubmit, handleEdit, sendDailySummary, hourlyCheck');
   ss.toast('Automations are on: form orders, status emails, daily summary.', 'Order Desk', 8);
 }

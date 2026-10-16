@@ -11,6 +11,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Add a test order', 'addTestOrder')
     .addItem('Create invoice for selected order', 'createInvoiceForSelection')
+    .addItem('Import missed form orders', 'importMissedFormOrdersNow')
     .addItem('Refresh dashboard', 'refreshDashboard')
     .addItem('Send daily summary now', 'sendDailySummary')
     .addToUi();
@@ -42,8 +43,8 @@ function setupOrderDesk() {
     'Invoice': 90, 'Notes': 220, 'Last update': 130 };
   ORDER_COLUMNS.forEach(function (name, i) { orders.setColumnWidth(i + 1, widths[name] || 85); });
   const rows = orders.getMaxRows() - 1;
-  orders.getRange(2, col_('Created'), rows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
-  orders.getRange(2, col_('Last update'), rows, 1).setNumberFormat('yyyy-mm-dd hh:mm');
+  orders.getRange(2, col_('Created'), rows, 1).setNumberFormat(DATE_FORMAT);
+  orders.getRange(2, col_('Last update'), rows, 1).setNumberFormat(DATE_FORMAT);
   ['Subtotal', 'Discount', 'Tax', 'Total'].forEach(function (name) {
     orders.getRange(2, col_(name), rows, 1).setNumberFormat(moneyFormat);
   });

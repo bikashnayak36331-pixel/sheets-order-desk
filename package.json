@@ -1,6 +1,6 @@
 {
   "name": "sheets-order-desk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Order tracking, stock, PDF invoices, customer emails and a daily summary for Google Sheets, built with Apps Script.",
   "private": true,
   "license": "MIT",

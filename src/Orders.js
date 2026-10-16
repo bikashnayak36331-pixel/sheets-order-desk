@@ -6,12 +6,24 @@
  * Installable "On form submit" trigger. Works with a Google Form linked to this spreadsheet.
  * Recognised questions (case does not matter): Name, Email, Phone, Product, Quantity, Items, Notes.
  * Use either Product + Quantity (one product) or Items ("CAKE-CHOC x2, CUPC-12").
+ *
+ * The new order's ID is written next to the response (column "Order Desk ID"), so a response is never turned
+ * into two orders, even if Google fires the trigger twice, and importMissedFormOrders() can find responses
+ * whose trigger never fired.
  */
 function onFormSubmit(e) {
+  const input = formAnswersToInput_((e && e.namedValues) || {});
+  input.source = 'Form';
+  if (e && e.range) input.response = { sheet: e.range.getSheet(), row: e.range.getRow() };
+  return createOrder_(input);
+}
+
+/** Turn form answers ({question: [answer]}) into the input for createOrder_. */
+function formAnswersToInput_(named) {
   const answers = {};
-  const named = (e && e.namedValues) || {};
   Object.keys(named).forEach(function (q) {
-    answers[q.trim().toLowerCase()] = String((named[q] || [''])[0]).trim();
+    const v = named[q];
+    answers[String(q).trim().toLowerCase()] = String((Array.isArray(v) ? v[0] : v) || '').trim();
   });
   const pick = function () {
     for (let i = 0; i < arguments.length; i++) if (answers[arguments[i]]) return answers[arguments[i]];
@@ -23,13 +35,60 @@ function onFormSubmit(e) {
     const qty = pick('quantity', 'qty') || '1';
     items = product ? productToSku_(product) + ' x' + qty : '';
   }
-  return createOrder_({
+  return {
     customer: pick('name', 'your name', 'full name', 'customer'),
     email: pick('email', 'email address', 'your email'),
     phone: pick('phone', 'phone number', 'mobile'),
     items: items,
     notes: pick('notes', 'comments', 'message', 'delivery notes'),
-    source: 'Form',
+  };
+}
+
+/**
+ * Turn form responses that have no order yet into orders. Google occasionally does not fire the form submit
+ * trigger (seen in a live test on 16 Oct 2026), so this runs every hour (hourlyCheck) and from the menu.
+ * Responses that were already there when the automations were installed are marked "Not imported" and skipped.
+ */
+function importMissedFormOrders() {
+  let imported = 0;
+  formResponseSheets_().forEach(function (sh) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const idCol = formIdColumn_(sh);
+    const values = sh.getRange(1, 1, lastRow, Math.max(idCol, sh.getLastColumn())).getValues();
+    const header = values[0];
+    for (let r = 1; r < values.length; r++) {
+      if (values[r][0] === '' || values[r][idCol - 1] !== '') continue; // empty row, or already handled
+      const named = {};
+      header.forEach(function (h, i) { if (i > 0 && i !== idCol - 1 && h !== '') named[h] = [values[r][i]]; });
+      const input = formAnswersToInput_(named);
+      input.source = 'Form, caught up';
+      input.response = { sheet: sh, row: r + 1 };
+      if (createOrder_(input)) imported += 1;
+    }
+  });
+  if (imported) log_('Missed form orders imported', '', imported + ' order(s) whose form trigger did not run');
+  return imported;
+}
+
+/** Menu: run the catch-up now and say what happened. */
+function importMissedFormOrdersNow() {
+  const n = importMissedFormOrders();
+  ss_().toast(n ? 'Imported ' + n + ' missed form order(s).' : 'Every form response already has an order.',
+    'Order Desk', 6);
+  return n;
+}
+
+/** Installing the automations: mark responses that already exist so the catch-up never imports them. */
+function markExistingFormResponses_() {
+  formResponseSheets_().forEach(function (sh) {
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const idCol = formIdColumn_(sh);
+    const values = sh.getRange(2, 1, lastRow - 1, idCol).getValues();
+    values.forEach(function (v, i) {
+      if (v[0] !== '' && v[idCol - 1] === '') sh.getRange(i + 2, idCol).setValue(FORM_NOT_IMPORTED);
+    });
   });
 }
 
@@ -55,6 +114,16 @@ function createOrder_(input) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000); // two form submissions at once must not get the same order ID
   try {
+    // A form response becomes at most one order: skip it if it already has an Order Desk ID.
+    let responseCell = null;
+    if (input.response) {
+      responseCell = input.response.sheet.getRange(input.response.row, formIdColumn_(input.response.sheet));
+      const existing = responseCell.getValue();
+      if (existing !== '') {
+        log_('Form response skipped', String(existing), 'Row ' + input.response.row + ' already has an order');
+        return null;
+      }
+    }
     const settings = getSettings_();
     const products = getProducts_();
     const sh = sheet_(SHEETS.ORDERS);
@@ -113,6 +182,9 @@ function createOrder_(input) {
     });
     sh.appendRow(row);
     const rowNumber = sh.getLastRow();
+    setDateCell_(sh, rowNumber, col_('Created'), now);
+    setDateCell_(sh, rowNumber, col_('Last update'), now);
+    if (responseCell) responseCell.setValue(id);
     log_('Order created (' + (input.source || 'Manual') + ')', id, status + ': ' + itemsText);
     const order = readOrder_(rowNumber, settings);
     notifyCustomer_(order, status, settings, null);
